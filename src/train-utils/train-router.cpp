@@ -18,10 +18,10 @@ int train_model(string file_path) {
   string line;
   while (getline(file, line)) {
     stringstream ss(line);
-    while (ss.good()) {
-      string token;
-      getline(ss, token, ' ');
-      token = tokenize(token);
+    while (ss.good()) {      
+      string word;
+      ss >> word;
+      int token = tokenize(word);
       cout << token << endl;
     }
   }
