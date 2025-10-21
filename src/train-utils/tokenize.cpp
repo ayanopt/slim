@@ -1,14 +1,12 @@
-#include <string>
-#include <vector>
-#include <sstream>
-#include <cctype>
+#include "tokenize.h"
 
-using namespace std;
-
-int tokenize(string word) {
-    int curr_sum = 0;
-    for (char &c : word) {
-        curr_sum += tolower(c);
+int tokenize(string &word) {
+    unsigned long int curr_sum = 0;
+    for (size_t i = 0; i < word.size(); i++) {
+        curr_sum += pow(10, (word.size() - i - 1)) * tolower(word[i]);
     }
-    return curr_sum;
+    if (curr_sum == ULONG_MAX) {
+        cerr << "Overflow at word: " + word << endl;
+    }
+    return curr_sum % INT32_MAX;
 }

@@ -1,7 +1,9 @@
+#include <cctype>
+#include <climits>
+#include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
-#include <sstream>
-#include <cctype>
 
 using namespace std;
 
@@ -16,4 +18,4 @@ cat -> (67 * 100) + (97 * 10) + (116 * 1) = 7786
 cAt -> cat -> (67 * 100) + (97 * 10) + (116 * 1) = 7786
 
 */
-int tokenize(string word);
+int tokenize(string &word);
