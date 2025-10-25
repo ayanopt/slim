@@ -1,9 +1,12 @@
+#pragma once
 #include <cctype>
 #include <climits>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <cmath>
 
 using namespace std;
 
@@ -22,7 +25,7 @@ unsigned int tokenize(string &word);
 
 class token_map {
   public:
-    token_map();
+    token_map() = default;
     unordered_map<int, int> token_indexer;
     vector<string> string_accessor;
     /*

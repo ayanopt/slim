@@ -6,7 +6,7 @@ int vector_dot_product(const vector<int> &a, const vector<int> &b) {
     if (!valid_op) {
         throw invalid_argument("Invalid operation: vector sizes do not match");
     }
-    int result;
+    int result = 0;
     for (size_t i = 0; i < a.size(); i++) {
         result += (a[i] * b[i]);
     }
