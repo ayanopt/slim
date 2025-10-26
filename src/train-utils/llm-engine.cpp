@@ -5,6 +5,17 @@
 #include <algorithm>
 
 LLMEngine::LLMEngine(const TransformerConfig& config) : config(config) {
+    // Preload English 10k words for richer tokenization
+    ifstream vocab_file("demo/english-10k-words.txt");
+    if (vocab_file) {
+        string word;
+        while (getline(vocab_file, word)) {
+            if (!word.empty()) {
+                tokenizer.add(word);
+            }
+        }
+    }
+    
     model = make_unique<Transformer>(config);
 }
 
@@ -55,10 +66,11 @@ vector<vector<int>> LLMEngine::create_batches(const vector<int>& tokens, int bat
 int LLMEngine::sample_next_token(const fvector& logits, float temperature) {
     if (logits.empty() || tokenizer.size() == 0) return 0;
     
-    vector<float> probs = logits;
+    size_t vocab_size = min(logits.size(), tokenizer.size());
+    vector<float> probs(vocab_size);
     
-    for (auto& prob : probs) {
-        prob /= temperature;
+    for (size_t i = 0; i < vocab_size; ++i) {
+        probs[i] = logits[i] / temperature;
     }
     
     float max_logit = *max_element(probs.begin(), probs.end());
@@ -69,6 +81,8 @@ int LLMEngine::sample_next_token(const fvector& logits, float temperature) {
         sum += prob;
     }
     
+    if (sum == 0.0f) return 0;
+    
     for (auto& prob : probs) {
         prob /= sum;
     }
@@ -77,15 +91,35 @@ int LLMEngine::sample_next_token(const fvector& logits, float temperature) {
     mt19937 gen(rd());
     discrete_distribution<int> dist(probs.begin(), probs.end());
     
-    int result = dist(gen);
-    return result % tokenizer.size();
+    return dist(gen) % tokenizer.size();
 }
 
 string LLMEngine::generate(const string& prompt, int max_tokens) {
-    vector<int> input_tokens = tokenize_text(prompt);
+    vector<int> input_tokens;
+    stringstream ss(prompt);
+    string word;
     
-    if (input_tokens.empty()) {
-        return "";
+    // Handle unknown words by using existing vocabulary
+    while (ss >> word) {
+        transform(word.begin(), word.end(), word.begin(), ::tolower);
+        word.erase(remove_if(word.begin(), word.end(), [](char c) {
+            return !isalnum(c);
+        }), word.end());
+        
+        if (!word.empty()) {
+            try {
+                input_tokens.push_back(tokenizer.get_index(word));
+            } catch (const invalid_argument&) {
+                // Use a random existing token for unknown words
+                if (tokenizer.size() > 0) {
+                    input_tokens.push_back(rand() % tokenizer.size());
+                }
+            }
+        }
+    }
+    
+    if (input_tokens.empty() && tokenizer.size() > 0) {
+        input_tokens.push_back(0);
     }
     
     vector<int> generated_tokens = input_tokens;
@@ -121,6 +155,7 @@ void LLMEngine::train_on_text(const string& text_data, int epochs) {
     model = make_unique<Transformer>(config);
     
     vector<vector<int>> batches = create_batches(tokens, config.seq_len);
+    cout << "Training with vocabulary size: " << config.vocab_size << endl;
     model->train(batches, epochs);
 }
 

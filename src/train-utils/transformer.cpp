@@ -239,7 +239,6 @@ fmatrix TransformerBlock::forward(const fmatrix& input) {
 Transformer::Transformer(const TransformerConfig& config) : config(config) {
     random_device rd;
     mt19937 gen(rd());
-    normal_distribution<float> dist(0.0f, sqrt(2.0f / config.d_model));
     
     for (int i = 0; i < config.n_layers; ++i) {
         blocks.emplace_back(config.d_model, config.n_heads, config.d_ff);
@@ -249,11 +248,25 @@ Transformer::Transformer(const TransformerConfig& config) : config(config) {
     pos_embedding = fmatrix(config.seq_len, fvector(config.d_model));
     output_projection = fmatrix(config.d_model, fvector(config.vocab_size));
     
-    for (auto& matrix : {&token_embedding, &pos_embedding, &output_projection}) {
-        for (auto& row : *matrix) {
-            for (auto& val : row) {
-                val = dist(gen);
-            }
+    // Xavier initialization for better training
+    normal_distribution<float> embed_dist(0.0f, sqrt(1.0f / config.d_model));
+    normal_distribution<float> proj_dist(0.0f, sqrt(1.0f / config.vocab_size));
+    
+    for (auto& row : token_embedding) {
+        for (auto& val : row) {
+            val = embed_dist(gen);
+        }
+    }
+    
+    for (auto& row : pos_embedding) {
+        for (auto& val : row) {
+            val = embed_dist(gen) * 0.1f;
+        }
+    }
+    
+    for (auto& row : output_projection) {
+        for (auto& val : row) {
+            val = proj_dist(gen);
         }
     }
 }
@@ -262,8 +275,11 @@ fmatrix Transformer::get_embeddings(const vector<int>& tokens) {
     fmatrix embeddings(tokens.size(), fvector(config.d_model));
     
     for (size_t i = 0; i < tokens.size(); ++i) {
+        int token_id = tokens[i] % config.vocab_size;
+        size_t pos_id = min(i, static_cast<size_t>(config.seq_len - 1));
+        
         for (int j = 0; j < config.d_model; ++j) {
-            embeddings[i][j] = token_embedding[tokens[i]][j] + pos_embedding[i][j];
+            embeddings[i][j] = token_embedding[token_id][j] + pos_embedding[pos_id][j];
         }
     }
     
@@ -282,20 +298,56 @@ fvector Transformer::forward(const vector<int>& tokens) {
 }
 
 void Transformer::train(const vector<vector<int>>& batches, int epochs) {
+    const float learning_rate = 0.001f;
+    
     for (int epoch = 0; epoch < epochs; ++epoch) {
-        vector<future<void>> futures;
+        vector<future<float>> futures;
         
         for (const auto& batch : batches) {
-            futures.push_back(async(launch::async, [this, &batch]() {
-                for (size_t i = 0; i < batch.size() - 1; ++i) {
-                    vector<int> input(batch.begin(), batch.begin() + i + 1);
-                    fvector output = forward(input);
+            futures.push_back(async(launch::async, [this, &batch, learning_rate]() -> float {
+                float batch_loss = 0.0f;
+                
+                for (size_t i = 1; i < batch.size(); ++i) {
+                    vector<int> input(batch.begin(), batch.begin() + i);
+                    int target = batch[i] % config.vocab_size;
+                    
+                    fvector logits = forward(input);
+                    
+                    // Compute cross-entropy loss
+                    float max_logit = *max_element(logits.begin(), logits.end());
+                    float sum_exp = 0.0f;
+                    for (auto& logit : logits) {
+                        sum_exp += exp(logit - max_logit);
+                    }
+                    float loss = -logits[target] + max_logit + log(sum_exp);
+                    batch_loss += loss;
+                    
+                    // Simple gradient update for output layer
+                    fvector probs(logits.size());
+                    for (size_t j = 0; j < logits.size(); ++j) {
+                        probs[j] = exp(logits[j] - max_logit) / sum_exp;
+                        if (j == static_cast<size_t>(target)) probs[j] -= 1.0f;
+                    }
+                    
+                    // Update output projection weights
+                    for (int j = 0; j < config.d_model; ++j) {
+                        for (size_t k = 0; k < probs.size(); ++k) {
+                            output_projection[j][k] -= learning_rate * probs[k] * 0.1f;
+                        }
+                    }
                 }
+                
+                return batch_loss / batch.size();
             }));
         }
         
+        float total_loss = 0.0f;
         for (auto& future : futures) {
-            future.wait();
+            total_loss += future.get();
+        }
+        
+        if (epoch % 10 == 0) {
+            cout << "Epoch " << epoch << ", Loss: " << total_loss / batches.size() << endl;
         }
     }
 }

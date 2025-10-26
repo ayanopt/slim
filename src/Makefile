@@ -7,8 +7,6 @@ OBJDIR = obj
 SOURCES = $(wildcard $(SRCDIR)/*.cpp)
 OBJECTS = $(SOURCES:$(SRCDIR)/%.cpp=$(OBJDIR)/%.o)
 
-# Target executables
-TRAIN_TARGET = train-model
 LLM_TARGET = llm-demo
 
 # Default target
@@ -22,9 +20,7 @@ $(OBJDIR):
 $(OBJDIR)/%.o: $(SRCDIR)/%.cpp | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# Link train-model executable
-$(TRAIN_TARGET): train-model.cpp $(OBJECTS)
-	$(CXX) $(CXXFLAGS) train-model.cpp $(OBJECTS) -o $(TRAIN_TARGET)
+
 
 # Link llm-demo executable
 $(LLM_TARGET): llm-demo.cpp $(OBJECTS)
@@ -32,6 +28,6 @@ $(LLM_TARGET): llm-demo.cpp $(OBJECTS)
 
 # Clean build files
 clean:
-	rm -rf $(OBJDIR) $(TRAIN_TARGET) $(LLM_TARGET)
+	rm -rf $(OBJDIR) $(LLM_TARGET)
 
 .PHONY: all clean
