@@ -14,17 +14,20 @@ unsigned int tokenize(string &word) {
 size_t token_map::size() { return string_accessor.size(); }
 
 int token_map::get_index(string &word) {
-    return token_indexer.at(tokenize(word));
-}
-
-string token_map::get_word(int token) {
+    int token = tokenize(word);
     auto it = token_indexer.find(token);
     if (it == token_indexer.end()) {
-        cerr << "This word hasn't been tokenized" << endl;
-        throw invalid_argument("This token hasn't been observerd " +
-                               to_string(token));
+        add(word);
+        return token_indexer.at(token);
     }
-    return string_accessor[it->second];
+    return it->second;
+}
+
+string token_map::get_word(int index) {
+    if (index >= 0 && index < static_cast<int>(string_accessor.size())) {
+        return string_accessor[index];
+    }
+    throw invalid_argument("Invalid token index: " + to_string(index));
 }
 
 void token_map::add(string &word) {

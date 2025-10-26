@@ -53,6 +53,8 @@ vector<vector<int>> LLMEngine::create_batches(const vector<int>& tokens, int bat
 }
 
 int LLMEngine::sample_next_token(const fvector& logits, float temperature) {
+    if (logits.empty() || tokenizer.size() == 0) return 0;
+    
     vector<float> probs = logits;
     
     for (auto& prob : probs) {
@@ -75,7 +77,8 @@ int LLMEngine::sample_next_token(const fvector& logits, float temperature) {
     mt19937 gen(rd());
     discrete_distribution<int> dist(probs.begin(), probs.end());
     
-    return dist(gen);
+    int result = dist(gen);
+    return result % tokenizer.size();
 }
 
 string LLMEngine::generate(const string& prompt, int max_tokens) {
