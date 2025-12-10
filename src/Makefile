@@ -1,33 +1,28 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -O3 -pthread
+CXXFLAGS = -std=c++17 -Wall -Wextra -O3 -march=native -ffast-math -pthread -flto
 SRCDIR = train-utils
 OBJDIR = obj
 
-# Source files
 SOURCES = $(wildcard $(SRCDIR)/*.cpp)
 OBJECTS = $(SOURCES:$(SRCDIR)/%.cpp=$(OBJDIR)/%.o)
 
-LLM_TARGET = llm-demo
+TARGET = llm-demo
 
-# Default target
-all: $(TRAIN_TARGET) $(LLM_TARGET)
+all: $(TARGET)
 
-# Create object directory
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
 
-# Compile object files
 $(OBJDIR)/%.o: $(SRCDIR)/%.cpp | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+$(TARGET): llm-demo.cpp $(OBJECTS)
+	$(CXX) $(CXXFLAGS) llm-demo.cpp $(OBJECTS) -o $(TARGET)
 
-
-# Link llm-demo executable
-$(LLM_TARGET): llm-demo.cpp $(OBJECTS)
-	$(CXX) $(CXXFLAGS) llm-demo.cpp $(OBJECTS) -o $(LLM_TARGET)
-
-# Clean build files
 clean:
-	rm -rf $(OBJDIR) $(LLM_TARGET)
+	rm -rf $(OBJDIR) $(TARGET)
 
-.PHONY: all clean
+debug: CXXFLAGS = -std=c++17 -Wall -Wextra -g -pthread
+debug: clean all
+
+.PHONY: all clean debug
