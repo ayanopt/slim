@@ -27,11 +27,9 @@ struct Config {
     float weight_decay = 0.01f;
 };
 
-inline float fast_exp(float x) {
-    x = 1.0f + x / 256.0f;
-    x *= x; x *= x; x *= x; x *= x;
-    x *= x; x *= x; x *= x; x *= x;
-    return x;
+inline float safe_exp(float x) {
+    x = max(-20.0f, min(20.0f, x));
+    return expf(x);
 }
 
 inline float fast_gelu(float x) {
@@ -39,7 +37,7 @@ inline float fast_gelu(float x) {
 }
 
 inline float silu(float x) {
-    return x / (1.0f + fast_exp(-x));
+    return x / (1.0f + safe_exp(-x));
 }
 
 class Tensor {
@@ -232,7 +230,7 @@ public:
 
                 float sum = 0.0f;
                 for (int sk = 0; sk < kv_len; ++sk) {
-                    scores[sk] = fast_exp(scores[sk] - max_score);
+                    scores[sk] = safe_exp(scores[sk] - max_score);
                     sum += scores[sk];
                 }
                 for (int sk = 0; sk < kv_len; ++sk) scores[sk] /= sum;
@@ -433,14 +431,18 @@ public:
         fvec probs(cfg.vocab_size);
         
         for (int i = 0; i < cfg.vocab_size; ++i) {
-            probs[i] = fast_exp(logits[i] - max_logit);
+            probs[i] = safe_exp(logits[i] - max_logit);
             sum_exp += probs[i];
         }
         
-        float loss = -logits[target] + max_logit + logf(sum_exp);
+        if (sum_exp < 1e-10f) sum_exp = 1e-10f;
+        
+        float loss = -logits[target] + max_logit + logf(sum_exp + 1e-10f);
+        if (!isfinite(loss)) loss = 10.0f;
         
         for (int i = 0; i < cfg.vocab_size; ++i) {
             probs[i] = probs[i] / sum_exp - (i == target ? 1.0f : 0.0f);
+            probs[i] = max(-1.0f, min(1.0f, probs[i]));
         }
 
         ++step;
@@ -452,6 +454,7 @@ public:
                 unembed.m[i * cfg.vocab_size + j] = cfg.beta1 * unembed.m[i * cfg.vocab_size + j] + (1 - cfg.beta1) * g;
                 unembed.v[i * cfg.vocab_size + j] = cfg.beta2 * unembed.v[i * cfg.vocab_size + j] + (1 - cfg.beta2) * g * g;
                 float update = lr * unembed.m[i * cfg.vocab_size + j] / (sqrtf(unembed.v[i * cfg.vocab_size + j]) + cfg.eps);
+                update = max(-0.1f, min(0.1f, update));
                 unembed.at(i, j) -= update + cfg.weight_decay * lr * unembed.at(i, j);
             }
         }
@@ -464,7 +467,11 @@ public:
             }
             embed.m[last_tok * cfg.dim + i] = cfg.beta1 * embed.m[last_tok * cfg.dim + i] + (1 - cfg.beta1) * g;
             embed.v[last_tok * cfg.dim + i] = cfg.beta2 * embed.v[last_tok * cfg.dim + i] + (1 - cfg.beta2) * g * g;
+            g = max(-1.0f, min(1.0f, g));
+            embed.m[last_tok * cfg.dim + i] = cfg.beta1 * embed.m[last_tok * cfg.dim + i] + (1 - cfg.beta1) * g;
+            embed.v[last_tok * cfg.dim + i] = cfg.beta2 * embed.v[last_tok * cfg.dim + i] + (1 - cfg.beta2) * g * g;
             float update = lr * embed.m[last_tok * cfg.dim + i] / (sqrtf(embed.v[last_tok * cfg.dim + i]) + cfg.eps);
+            update = max(-0.1f, min(0.1f, update));
             embed.at(last_tok, i) -= update + cfg.weight_decay * lr * embed.at(last_tok, i);
         }
 
@@ -481,7 +488,7 @@ public:
         float sum = 0.0f;
         
         for (size_t i = 0; i < logits.size(); ++i) {
-            probs[i] = fast_exp((logits[i] - max_l) / temperature);
+            probs[i] = safe_exp((logits[i] - max_l) / temperature);
             sum += probs[i];
         }
         for (auto& p : probs) p /= sum;
