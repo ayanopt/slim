@@ -21,8 +21,9 @@ Default: 256-dim, 8 heads, 6 layers, 1024 hidden dim. TODO: Make configurable wi
 ```bash
 cd src
 make
+cd ..
 mkdir base
-curl -o ./base/TinyStories-train.txt https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStories-train.txt?download=true
+curl -L -o ./base/TinyStories-train.txt https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStories-train.txt
 ```
 
 ## Usage
@@ -30,7 +31,7 @@ curl -o ./base/TinyStories-train.txt https://huggingface.co/datasets/roneneldan/
 **Pretrain on large corpus (builds BPE vocab):**
 
 ```bash
-./slim pretrain TinyStories-train.txt 10 base.bin
+./slim pretrain base/TinyStories-train.txt 10 base.bin
 ```
 
 **Finetune on specific text:**
@@ -38,13 +39,18 @@ curl -o ./base/TinyStories-train.txt https://huggingface.co/datasets/roneneldan/
 ```bash
 ./slim finetune base.bin mydata.txt 50 finetuned.bin
 ```
+Example:
+
+```bash
+./slim finetune base.bin demo/bee-movie-script.txt 50 finetuned.bin
+```
 
 **Quick train from scratch:**
 
 ```bash
 ./slim train data.txt 100 model.bin
 ```
-
+>Note: Likely gibberish
 **Generate:**
 
 ```bash
