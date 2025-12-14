@@ -10,9 +10,8 @@
 using namespace std;
 
 /*
-My very own Tokenizer class, which is a wrapper around a vector of tokens and a
-map from tokens to ids. It also has a method to train a BPE tokenizer on a given
-text.
+Adapted BPE Tokenizer, which is a wrapper around a vector of tokens and a
+map from tokens to ids.
 */
 class Tokenizer {
   public:
