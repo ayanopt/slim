@@ -1,8 +1,74 @@
-# Overview
+# SLiM
 
-SLiM is meant to be a language model trained on small tailored data-sets. It leverages the speed and concurrency capabilities of C++ to provide quick turn around on training. This allows for people to host their language model locally.
+Small Lightweight Model for local training and inference. Pure C++17, no external dependencies. Leveraging multi-threading. Base model uses a subset of [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories/tree/main)
 
+## Architecture
 
-## Features
+Decoder-only transformer with full backpropagation:
 
-- Unique token library at compile time
+- RMSNorm (faster than LayerNorm, better gradient flow)
+- Rotary Position Embeddings (RoPE) for relative position encoding
+- SwiGLU activation in feed-forward layers
+- Multi-head attention with KV-cache for inference
+- AdamW optimizer with warmup scheduling
+- Confidence-based dynamic output length
+- BPE subword tokenization
+
+Default: 256-dim, 8 heads, 6 layers, 1024 hidden dim. TODO: Make configurable with specs
+
+## Building
+
+```bash
+cd src
+make
+mkdir base
+curl -o ./base/TinyStories-train.txt https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStories-train.txt?download=true
+```
+
+## Usage
+
+**Pretrain on large corpus (builds BPE vocab):**
+
+```bash
+./slim pretrain TinyStories-train.txt 10 base.bin
+```
+
+**Finetune on specific text:**
+
+```bash
+./slim finetune base.bin mydata.txt 50 finetuned.bin
+```
+
+**Quick train from scratch:**
+
+```bash
+./slim train data.txt 100 model.bin
+```
+
+**Generate:**
+
+```bash
+./slim generate model.bin "once upon a time" 100
+```
+
+**Interactive:**
+
+```bash
+./slim chat model.bin
+```
+
+## Training Pipeline
+
+1. Pretrain on TinyStories or similar corpus to learn general language patterns
+2. Finetune on domain-specific text for focused generation
+3. Generation uses confidence-based stopping (stops when model becomes uncertain)
+
+## Design Principles
+
+The model prioritizes training speed and coherent output over parameter count. Full backpropagation through all layers ensures the attention mechanism learns meaningful patterns rather than relying solely on embedding similarity.
+
+Confidence-based generation prevents the model from producing low-quality tokens when it lacks certainty, resulting in shorter but more coherent outputs.
+
+## License
+
+MIT

@@ -41,3 +41,5 @@
 *.dwo
 
 bin
+
+TinyStories-train.txt

@@ -1,329 +1,21 @@
 #pragma once
-#include <vector>
-#include <cmath>
-#include <random>
-#include <thread>
-#include <future>
-#include <algorithm>
-#include <numeric>
-
-using namespace std;
-
-using fvec = vector<float>;
-using fmat = vector<fvec>;
+#include "layers.h"
+#include <atomic>
 
 struct Config {
     int vocab_size = 1000;
-    int dim = 128;
-    int n_heads = 4;
-    int n_layers = 4;
-    int seq_len = 128;
-    int hidden_dim = 512;
-    float dropout = 0.1f;
-    float lr = 1e-3f;
+    int dim = 256;
+    int n_heads = 8;
+    int n_layers = 6;
+    int seq_len = 256;
+    int hidden_dim = 1024;
+    float lr = 1e-4f;
     float beta1 = 0.9f;
     float beta2 = 0.999f;
     float eps = 1e-8f;
-    float weight_decay = 0.01f;
-};
-
-inline float safe_exp(float x) {
-    x = max(-20.0f, min(20.0f, x));
-    return expf(x);
-}
-
-inline float fast_gelu(float x) {
-    return 0.5f * x * (1.0f + tanhf(0.7978845608f * (x + 0.044715f * x * x * x)));
-}
-
-inline float silu(float x) {
-    return x / (1.0f + safe_exp(-x));
-}
-
-class Tensor {
-public:
-    fvec data;
-    fvec grad;
-    fvec m, v;
-    int rows, cols;
-
-    Tensor() : rows(0), cols(0) {}
-    Tensor(int r, int c, bool init_adam = true) : rows(r), cols(c) {
-        data.resize(r * c);
-        grad.resize(r * c, 0.0f);
-        if (init_adam) {
-            m.resize(r * c, 0.0f);
-            v.resize(r * c, 0.0f);
-        }
-    }
-
-    void xavier_init(float fan_in, float fan_out) {
-        random_device rd;
-        mt19937 gen(rd());
-        float std = sqrtf(2.0f / (fan_in + fan_out));
-        normal_distribution<float> dist(0.0f, std);
-        for (auto& val : data) val = dist(gen);
-    }
-
-    void zero_grad() { fill(grad.begin(), grad.end(), 0.0f); }
-
-    float& at(int r, int c) { return data[r * cols + c]; }
-    float at(int r, int c) const { return data[r * cols + c]; }
-    float& grad_at(int r, int c) { return grad[r * cols + c]; }
-};
-
-class RMSNorm {
-public:
-    fvec weight;
-    fvec grad;
-    int dim;
-    float eps = 1e-6f;
-
-    RMSNorm(int d) : dim(d) {
-        weight.resize(d, 1.0f);
-        grad.resize(d, 0.0f);
-    }
-
-    fvec forward(const fvec& x) {
-        fvec out(x.size());
-        int seq_len = x.size() / dim;
-        for (int s = 0; s < seq_len; ++s) {
-            float ss = 0.0f;
-            for (int i = 0; i < dim; ++i) {
-                float v = x[s * dim + i];
-                ss += v * v;
-            }
-            float scale = 1.0f / sqrtf(ss / dim + eps);
-            for (int i = 0; i < dim; ++i) {
-                out[s * dim + i] = x[s * dim + i] * scale * weight[i];
-            }
-        }
-        return out;
-    }
-};
-
-class RotaryEmbedding {
-public:
-    fvec cos_cache, sin_cache;
-    int dim, max_seq;
-
-    RotaryEmbedding(int d, int max_s) : dim(d), max_seq(max_s) {
-        cos_cache.resize(max_s * d / 2);
-        sin_cache.resize(max_s * d / 2);
-        for (int pos = 0; pos < max_s; ++pos) {
-            for (int i = 0; i < d / 2; ++i) {
-                float freq = 1.0f / powf(10000.0f, 2.0f * i / d);
-                float angle = pos * freq;
-                cos_cache[pos * (d / 2) + i] = cosf(angle);
-                sin_cache[pos * (d / 2) + i] = sinf(angle);
-            }
-        }
-    }
-
-    void apply(fvec& q, fvec& k, int seq_len, int head_dim) {
-        int half = head_dim / 2;
-        for (int s = 0; s < seq_len; ++s) {
-            for (int i = 0; i < half; ++i) {
-                float cos_val = cos_cache[s * half + i];
-                float sin_val = sin_cache[s * half + i];
-                
-                float q0 = q[s * head_dim + i];
-                float q1 = q[s * head_dim + i + half];
-                q[s * head_dim + i] = q0 * cos_val - q1 * sin_val;
-                q[s * head_dim + i + half] = q0 * sin_val + q1 * cos_val;
-                
-                float k0 = k[s * head_dim + i];
-                float k1 = k[s * head_dim + i + half];
-                k[s * head_dim + i] = k0 * cos_val - k1 * sin_val;
-                k[s * head_dim + i + half] = k0 * sin_val + k1 * cos_val;
-            }
-        }
-    }
-};
-
-class Attention {
-public:
-    Tensor wq, wk, wv, wo;
-    RMSNorm norm;
-    int dim, n_heads, head_dim;
-    fvec k_cache, v_cache;
-    int cache_len = 0;
-
-    Attention(int d, int nh) : norm(d), dim(d), n_heads(nh), head_dim(d / nh) {
-        wq = Tensor(d, d);
-        wk = Tensor(d, d);
-        wv = Tensor(d, d);
-        wo = Tensor(d, d);
-        wq.xavier_init(d, d);
-        wk.xavier_init(d, d);
-        wv.xavier_init(d, d);
-        wo.xavier_init(d, d);
-    }
-
-    fvec forward(const fvec& x, RotaryEmbedding& rope, bool use_cache = false) {
-        int seq_len = x.size() / dim;
-        fvec normed = norm.forward(x);
-        
-        fvec q(seq_len * dim), k(seq_len * dim), v(seq_len * dim);
-        
-        for (int s = 0; s < seq_len; ++s) {
-            for (int i = 0; i < dim; ++i) {
-                float qv = 0, kv = 0, vv = 0;
-                for (int j = 0; j < dim; ++j) {
-                    float inp = normed[s * dim + j];
-                    qv += inp * wq.at(j, i);
-                    kv += inp * wk.at(j, i);
-                    vv += inp * wv.at(j, i);
-                }
-                q[s * dim + i] = qv;
-                k[s * dim + i] = kv;
-                v[s * dim + i] = vv;
-            }
-        }
-
-        for (int h = 0; h < n_heads; ++h) {
-            fvec q_head(seq_len * head_dim), k_head(seq_len * head_dim);
-            for (int s = 0; s < seq_len; ++s) {
-                for (int i = 0; i < head_dim; ++i) {
-                    q_head[s * head_dim + i] = q[s * dim + h * head_dim + i];
-                    k_head[s * head_dim + i] = k[s * dim + h * head_dim + i];
-                }
-            }
-            rope.apply(q_head, k_head, seq_len, head_dim);
-            for (int s = 0; s < seq_len; ++s) {
-                for (int i = 0; i < head_dim; ++i) {
-                    q[s * dim + h * head_dim + i] = q_head[s * head_dim + i];
-                    k[s * dim + h * head_dim + i] = k_head[s * head_dim + i];
-                }
-            }
-        }
-
-        if (use_cache) {
-            k_cache.insert(k_cache.end(), k.begin(), k.end());
-            v_cache.insert(v_cache.end(), v.begin(), v.end());
-            k = k_cache;
-            v = v_cache;
-            cache_len += seq_len;
-        }
-
-        int kv_len = k.size() / dim;
-        fvec out(seq_len * dim, 0.0f);
-        float scale = 1.0f / sqrtf(head_dim);
-
-        for (int h = 0; h < n_heads; ++h) {
-            for (int sq = 0; sq < seq_len; ++sq) {
-                fvec scores(kv_len);
-                float max_score = -1e9f;
-                
-                for (int sk = 0; sk < kv_len; ++sk) {
-                    if (!use_cache && sk > sq) {
-                        scores[sk] = -1e9f;
-                        continue;
-                    }
-                    float score = 0.0f;
-                    for (int i = 0; i < head_dim; ++i) {
-                        score += q[sq * dim + h * head_dim + i] * k[sk * dim + h * head_dim + i];
-                    }
-                    scores[sk] = score * scale;
-                    max_score = max(max_score, scores[sk]);
-                }
-
-                float sum = 0.0f;
-                for (int sk = 0; sk < kv_len; ++sk) {
-                    scores[sk] = safe_exp(scores[sk] - max_score);
-                    sum += scores[sk];
-                }
-                for (int sk = 0; sk < kv_len; ++sk) scores[sk] /= sum;
-
-                for (int i = 0; i < head_dim; ++i) {
-                    float val = 0.0f;
-                    for (int sk = 0; sk < kv_len; ++sk) {
-                        val += scores[sk] * v[sk * dim + h * head_dim + i];
-                    }
-                    out[sq * dim + h * head_dim + i] = val;
-                }
-            }
-        }
-
-        fvec proj(seq_len * dim, 0.0f);
-        for (int s = 0; s < seq_len; ++s) {
-            for (int i = 0; i < dim; ++i) {
-                float val = 0.0f;
-                for (int j = 0; j < dim; ++j) {
-                    val += out[s * dim + j] * wo.at(j, i);
-                }
-                proj[s * dim + i] = val + x[s * dim + i];
-            }
-        }
-        return proj;
-    }
-
-    void clear_cache() {
-        k_cache.clear();
-        v_cache.clear();
-        cache_len = 0;
-    }
-};
-
-class SwiGLU {
-public:
-    Tensor w1, w2, w3;
-    RMSNorm norm;
-    int dim, hidden;
-
-    SwiGLU(int d, int h) : norm(d), dim(d), hidden(h) {
-        w1 = Tensor(d, h);
-        w2 = Tensor(h, d);
-        w3 = Tensor(d, h);
-        w1.xavier_init(d, h);
-        w2.xavier_init(h, d);
-        w3.xavier_init(d, h);
-    }
-
-    fvec forward(const fvec& x) {
-        int seq_len = x.size() / dim;
-        fvec normed = norm.forward(x);
-        fvec h1(seq_len * hidden), h3(seq_len * hidden);
-
-        for (int s = 0; s < seq_len; ++s) {
-            for (int i = 0; i < hidden; ++i) {
-                float v1 = 0, v3 = 0;
-                for (int j = 0; j < dim; ++j) {
-                    v1 += normed[s * dim + j] * w1.at(j, i);
-                    v3 += normed[s * dim + j] * w3.at(j, i);
-                }
-                h1[s * hidden + i] = silu(v1) * v3;
-            }
-        }
-
-        fvec out(seq_len * dim);
-        for (int s = 0; s < seq_len; ++s) {
-            for (int i = 0; i < dim; ++i) {
-                float val = 0.0f;
-                for (int j = 0; j < hidden; ++j) {
-                    val += h1[s * hidden + j] * w2.at(j, i);
-                }
-                out[s * dim + i] = val + x[s * dim + i];
-            }
-        }
-        return out;
-    }
-};
-
-class TransformerBlock {
-public:
-    Attention attn;
-    SwiGLU ffn;
-
-    TransformerBlock(int dim, int n_heads, int hidden) 
-        : attn(dim, n_heads), ffn(dim, hidden) {}
-
-    fvec forward(const fvec& x, RotaryEmbedding& rope, bool use_cache = false) {
-        fvec h = attn.forward(x, rope, use_cache);
-        return ffn.forward(h);
-    }
-
-    void clear_cache() { attn.clear_cache(); }
+    float weight_decay = 0.1f;
+    float warmup_steps = 100.0f;
+    float min_confidence = 0.3f;
 };
 
 class Transformer {
@@ -334,16 +26,18 @@ public:
     vector<TransformerBlock> layers;
     RotaryEmbedding rope;
     
-    Tensor m_embed, v_embed, m_unembed, v_unembed;
+    fvec last_hidden;
+    fvec embed_input;
     int step = 0;
 
     Transformer(const Config& c) 
         : cfg(c), final_norm(c.dim), rope(c.dim / c.n_heads, c.seq_len) {
         embed = Tensor(c.vocab_size, c.dim);
         unembed = Tensor(c.dim, c.vocab_size);
-        embed.xavier_init(c.vocab_size, c.dim);
-        unembed.xavier_init(c.dim, c.vocab_size);
+        embed.xavier_init();
+        unembed.xavier_init();
         
+        layers.reserve(c.n_layers);
         for (int i = 0; i < c.n_layers; ++i) {
             layers.emplace_back(c.dim, c.n_heads, c.hidden_dim);
         }
@@ -392,9 +86,11 @@ public:
     fvec forward(const vector<int>& tokens, bool use_cache = false) {
         int seq_len = tokens.size();
         fvec x(seq_len * cfg.dim);
+        embed_input.resize(seq_len);
         
         for (int s = 0; s < seq_len; ++s) {
             int tok = tokens[s] % cfg.vocab_size;
+            embed_input[s] = tok;
             for (int i = 0; i < cfg.dim; ++i) {
                 x[s * cfg.dim + i] = embed.at(tok, i);
             }
@@ -404,22 +100,44 @@ public:
             x = layer.forward(x, rope, use_cache);
         }
 
-        x = final_norm.forward(x);
+        fvec scales;
+        last_hidden = final_norm.forward(x, scales);
 
         fvec logits(cfg.vocab_size);
         int last = seq_len - 1;
-        for (int i = 0; i < cfg.vocab_size; ++i) {
-            float val = 0.0f;
-            for (int j = 0; j < cfg.dim; ++j) {
-                val += x[last * cfg.dim + j] * unembed.at(j, i);
+        
+        int nt = num_threads();
+        vector<thread> threads;
+        
+        auto compute_logits = [&](int start, int end) {
+            for (int i = start; i < end; ++i) {
+                float val = 0.0f;
+                for (int j = 0; j < cfg.dim; ++j) {
+                    val += last_hidden[last * cfg.dim + j] * unembed.at(j, i);
+                }
+                logits[i] = val;
             }
-            logits[i] = val;
+        };
+
+        if (cfg.vocab_size >= nt * 100) {
+            int chunk = cfg.vocab_size / nt;
+            for (int t = 0; t < nt; ++t) {
+                int start = t * chunk;
+                int end = (t == nt - 1) ? cfg.vocab_size : start + chunk;
+                threads.emplace_back(compute_logits, start, end);
+            }
+            for (auto& th : threads) th.join();
+        } else {
+            compute_logits(0, cfg.vocab_size);
         }
+
         return logits;
     }
 
     float train_step(const vector<int>& tokens) {
         if (tokens.size() < 2) return 0.0f;
+        
+        zero_grad();
         
         vector<int> input(tokens.begin(), tokens.end() - 1);
         int target = tokens.back() % cfg.vocab_size;
@@ -431,76 +149,90 @@ public:
         fvec probs(cfg.vocab_size);
         
         for (int i = 0; i < cfg.vocab_size; ++i) {
-            probs[i] = safe_exp(logits[i] - max_logit);
+            probs[i] = fast_exp(logits[i] - max_logit);
             sum_exp += probs[i];
         }
+        sum_exp = max(sum_exp, 1e-10f);
         
-        if (sum_exp < 1e-10f) sum_exp = 1e-10f;
+        float loss = -logits[target] + max_logit + logf(sum_exp);
+        if (!isfinite(loss)) return 10.0f;
         
-        float loss = -logits[target] + max_logit + logf(sum_exp + 1e-10f);
-        if (!isfinite(loss)) loss = 10.0f;
-        
+        fvec grad_logits(cfg.vocab_size);
         for (int i = 0; i < cfg.vocab_size; ++i) {
-            probs[i] = probs[i] / sum_exp - (i == target ? 1.0f : 0.0f);
-            probs[i] = max(-1.0f, min(1.0f, probs[i]));
+            grad_logits[i] = probs[i] / sum_exp - (i == target ? 1.0f : 0.0f);
         }
-
-        ++step;
-        float lr = cfg.lr * sqrtf(1.0f - powf(cfg.beta2, step)) / (1.0f - powf(cfg.beta1, step));
         
-        for (int i = 0; i < cfg.dim; ++i) {
-            for (int j = 0; j < cfg.vocab_size; ++j) {
-                float g = probs[j];
-                unembed.m[i * cfg.vocab_size + j] = cfg.beta1 * unembed.m[i * cfg.vocab_size + j] + (1 - cfg.beta1) * g;
-                unembed.v[i * cfg.vocab_size + j] = cfg.beta2 * unembed.v[i * cfg.vocab_size + j] + (1 - cfg.beta2) * g * g;
-                float update = lr * unembed.m[i * cfg.vocab_size + j] / (sqrtf(unembed.v[i * cfg.vocab_size + j]) + cfg.eps);
-                update = max(-0.1f, min(0.1f, update));
-                unembed.at(i, j) -= update + cfg.weight_decay * lr * unembed.at(i, j);
+        ++step;
+        float warmup_factor = min(1.0f, step / cfg.warmup_steps);
+        float lr = cfg.lr * warmup_factor;
+        
+        int seq_len = input.size();
+        int last = seq_len - 1;
+        
+        fvec grad_hidden(seq_len * cfg.dim, 0.0f);
+        for (int j = 0; j < cfg.dim; ++j) {
+            float sum = 0.0f;
+            for (int i = 0; i < cfg.vocab_size; ++i) {
+                sum += grad_logits[i] * unembed.at(j, i);
+                unembed.grad_at(j, i) += grad_logits[i] * last_hidden[last * cfg.dim + j];
+            }
+            grad_hidden[last * cfg.dim + j] = sum;
+        }
+        
+        fvec grad_x = grad_hidden;
+        for (int l = cfg.n_layers - 1; l >= 0; --l) {
+            fvec grad_in;
+            layers[l].backward(grad_x, rope, grad_in);
+            grad_x = grad_in;
+        }
+        
+        for (int s = 0; s < seq_len; ++s) {
+            int tok = static_cast<int>(embed_input[s]);
+            for (int i = 0; i < cfg.dim; ++i) {
+                embed.grad_at(tok, i) += grad_x[s * cfg.dim + i];
             }
         }
-
-        int last_tok = input.back() % cfg.vocab_size;
-        for (int i = 0; i < cfg.dim; ++i) {
-            float g = 0.0f;
-            for (int j = 0; j < cfg.vocab_size; ++j) {
-                g += probs[j] * unembed.at(i, j);
-            }
-            embed.m[last_tok * cfg.dim + i] = cfg.beta1 * embed.m[last_tok * cfg.dim + i] + (1 - cfg.beta1) * g;
-            embed.v[last_tok * cfg.dim + i] = cfg.beta2 * embed.v[last_tok * cfg.dim + i] + (1 - cfg.beta2) * g * g;
-            g = max(-1.0f, min(1.0f, g));
-            embed.m[last_tok * cfg.dim + i] = cfg.beta1 * embed.m[last_tok * cfg.dim + i] + (1 - cfg.beta1) * g;
-            embed.v[last_tok * cfg.dim + i] = cfg.beta2 * embed.v[last_tok * cfg.dim + i] + (1 - cfg.beta2) * g * g;
-            float update = lr * embed.m[last_tok * cfg.dim + i] / (sqrtf(embed.v[last_tok * cfg.dim + i]) + cfg.eps);
-            update = max(-0.1f, min(0.1f, update));
-            embed.at(last_tok, i) -= update + cfg.weight_decay * lr * embed.at(last_tok, i);
+        
+        embed.adamw_update(lr, cfg.beta1, cfg.beta2, cfg.eps, cfg.weight_decay, step);
+        unembed.adamw_update(lr, cfg.beta1, cfg.beta2, cfg.eps, cfg.weight_decay, step);
+        
+        for (auto& layer : layers) {
+            layer.update(lr, cfg.beta1, cfg.beta2, cfg.eps, cfg.weight_decay, step);
         }
-
+        
         return loss;
+    }
+
+    void zero_grad() {
+        embed.zero_grad();
+        unembed.zero_grad();
+        for (auto& layer : layers) layer.zero_grad();
     }
 
     void clear_cache() {
         for (auto& layer : layers) layer.clear_cache();
     }
 
-    int sample(const fvec& logits, float temperature = 0.8f, float top_p = 0.9f) {
+    pair<int, float> sample_with_confidence(const fvec& logits, float temperature = 0.8f, float top_p = 0.9f) {
         fvec probs(logits.size());
         float max_l = *max_element(logits.begin(), logits.end());
         float sum = 0.0f;
         
         for (size_t i = 0; i < logits.size(); ++i) {
-            probs[i] = safe_exp((logits[i] - max_l) / temperature);
+            probs[i] = fast_exp((logits[i] - max_l) / temperature);
             sum += probs[i];
         }
         for (auto& p : probs) p /= sum;
 
         vector<pair<float, int>> sorted_probs;
+        sorted_probs.reserve(probs.size());
         for (size_t i = 0; i < probs.size(); ++i) {
             sorted_probs.emplace_back(probs[i], i);
         }
         sort(sorted_probs.rbegin(), sorted_probs.rend());
 
         float cumsum = 0.0f;
-        int cutoff = sorted_probs.size();
+        size_t cutoff = sorted_probs.size();
         for (size_t i = 0; i < sorted_probs.size(); ++i) {
             cumsum += sorted_probs[i].first;
             if (cumsum > top_p) {
@@ -510,7 +242,7 @@ public:
         }
 
         float renorm = 0.0f;
-        for (int i = 0; i < cutoff; ++i) renorm += sorted_probs[i].first;
+        for (size_t i = 0; i < cutoff; ++i) renorm += sorted_probs[i].first;
         
         random_device rd;
         mt19937 gen(rd());
@@ -518,10 +250,16 @@ public:
         float r = dist(gen);
         
         cumsum = 0.0f;
-        for (int i = 0; i < cutoff; ++i) {
+        for (size_t i = 0; i < cutoff; ++i) {
             cumsum += sorted_probs[i].first;
-            if (cumsum >= r) return sorted_probs[i].second;
+            if (cumsum >= r) {
+                return {sorted_probs[i].second, sorted_probs[0].first};
+            }
         }
-        return sorted_probs[0].second;
+        return {sorted_probs[0].second, sorted_probs[0].first};
+    }
+
+    int sample(const fvec& logits, float temperature = 0.8f, float top_p = 0.9f) {
+        return sample_with_confidence(logits, temperature, top_p).first;
     }
 };
