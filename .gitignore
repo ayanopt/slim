@@ -43,3 +43,6 @@
 bin
 
 TinyStories-train.txt
+
+slim
+llm-demo
