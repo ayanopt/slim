@@ -46,16 +46,26 @@ public:
         return tokenizer.decode(generated);
     }
 
-    void pretrain(const string& corpus_path, int epochs = 3) {
+    void pretrain(const string& corpus_path, int epochs = 3, size_t max_chars = 0) {
         ifstream f(corpus_path);
         if (!f) {
             cerr << "Cannot read corpus: " << corpus_path << endl;
             return;
         }
         
-        stringstream buf;
-        buf << f.rdbuf();
-        string text = buf.str();
+        string text;
+        if (max_chars > 0) {
+            text.resize(max_chars);
+            f.read(&text[0], max_chars);
+            text.resize(f.gcount());
+            // Trim to last complete story (ends with newline)
+            size_t last_nl = text.rfind('\n');
+            if (last_nl != string::npos) text.resize(last_nl);
+        } else {
+            stringstream buf;
+            buf << f.rdbuf();
+            text = buf.str();
+        }
         
         cout << "Building BPE vocabulary from corpus..." << endl;
         tokenizer.train_bpe(text, 8000);

@@ -31,7 +31,11 @@ curl -L -o ./base/TinyStories-train.txt https://huggingface.co/datasets/roneneld
 **Pretrain on large corpus (builds BPE vocab):**
 
 ```bash
+# Full corpus
 ./slim pretrain base/TinyStories-train.txt 10 base.bin
+
+# First 1MB only (faster)
+./slim pretrain base/TinyStories-train.txt 10 base.bin 1000000
 ```
 
 **Finetune on specific text:**

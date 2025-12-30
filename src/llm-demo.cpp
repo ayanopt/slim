@@ -16,7 +16,7 @@ string read_file(const string& path) {
 void print_usage(const char* prog) {
     cerr << "Usage: " << prog << " <command> [options]\n\n"
          << "Commands:\n"
-         << "  pretrain <corpus> <epochs> <model_out>     Train from scratch on large corpus\n"
+         << "  pretrain <corpus> <epochs> <model_out> [max_chars]  Train from scratch (0=all)\n"
          << "  finetune <model> <text_file> <epochs> <model_out>  Finetune existing model\n"
          << "  train <text_file> <epochs> <model_out>     Quick train on text file\n"
          << "  generate <model> [prompt] [max_tokens]     Generate text\n"
@@ -43,14 +43,15 @@ int main(int argc, char** argv) {
 
     if (cmd == "pretrain") {
         if (argc < 5) {
-            cerr << "Usage: " << argv[0] << " pretrain <corpus> <epochs> <model_out>" << endl;
+            cerr << "Usage: " << argv[0] << " pretrain <corpus> <epochs> <model_out> [max_chars]" << endl;
             return 1;
         }
         
         LLMEngine engine(cfg);
         int epochs = stoi(argv[3]);
+        size_t max_chars = argc > 5 ? stoull(argv[5]) : 0;
         
-        engine.pretrain(argv[2], epochs);
+        engine.pretrain(argv[2], epochs, max_chars);
         engine.save(argv[4]);
         cout << "Saved: " << argv[4] << endl;
         
